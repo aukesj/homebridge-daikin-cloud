@@ -47,6 +47,13 @@
         "default": false,
         "description": "Expose extra advanced features as streamer mode, econo mode and powerful mode. They will only appear when they are also supported by your device."
       },
+      "showOutdoorTemperatureSensor": {
+        "title": "Show outdoor temperature sensor",
+        "type": "boolean",
+        "required": false,
+        "default": false,
+        "description": "Expose the outdoor temperature as a separate sensor. Off by default because the Apple Home app then shows the outdoor reading on the air conditioner's tile, which can be confusing."
+      },
       "excludedDevicesByDeviceId": {
         "title": "Exclude specific devices",
         "type": "array",

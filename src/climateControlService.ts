@@ -286,9 +286,11 @@ export class ClimateControlService {
 
         // Outdoor temperature sensor: the Onecta app shows it but HomeKit's HeaterCooler can't, so expose it as a
         // separate TemperatureSensor. Only some adapters report it, so add it conditionally.
+        // Off by default: a TemperatureSensor in the same accessory makes the Apple Home app show the outdoor reading
+        // on the climate tile, which looks like the AC is working off the outside temperature. Opt in with config.
         const outdoorTemperature = accessory.context.device.getData(this.managementPointId, 'sensoryData', '/outdoorTemperature');
         this.outdoorTemperatureSensorService = this.accessory.getService(this.outdoorTemperatureSensorName);
-        if (outdoorTemperature) {
+        if (outdoorTemperature && this.platform.config.showOutdoorTemperatureSensor) {
             this.outdoorTemperatureSensorService = this.outdoorTemperatureSensorService || accessory.addService(this.platform.Service.TemperatureSensor, this.outdoorTemperatureSensorName, 'outdoor_temperature');
             this.outdoorTemperatureSensorService.setCharacteristic(this.platform.Characteristic.Name, this.outdoorTemperatureSensorName);
             this.outdoorTemperatureSensorService.getCharacteristic(this.platform.Characteristic.CurrentTemperature)

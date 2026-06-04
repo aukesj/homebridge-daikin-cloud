@@ -13,6 +13,7 @@ import {Logger} from 'homebridge/lib/logger.js';
 function buildAccessory(deviceJson: object) {
     const device = new DaikinCloudDevice(structuredClone(deviceJson), ({requestResource: async () => true}) as unknown as OnectaClient);
     const config = new MockPlatformConfig(true);
+    (config as unknown as Record<string, unknown>).showOutdoorTemperatureSensor = true;
     const api = new HomebridgeAPI();
     const uuid = api.hap.uuid.generate(device.getId());
     const accessory = new api.platformAccessory('NAME_FOR_TEST', uuid);
