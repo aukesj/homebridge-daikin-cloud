@@ -13,11 +13,20 @@ export class ClimateControlService {
         STREAMER_MODE: 'Streamer mode',
         OUTDOUR_SILENT_MODE: 'Outdoor silent mode',
         INDOOR_SILENT_MODE: 'Indoor silent mode',
+        FAN_AUTO_MODE: 'Auto fan speed',
         DRY_OPERATION_MODE: 'Dry operation mode',
         FAN_ONLY_OPERATION_MODE: 'Fan only operation mode',
     };
 
     private readonly name: string;
+    private readonly outdoorTemperatureSensorName = 'Outdoor temperature';
+    private readonly faultSensorName = 'Fault';
+
+    // Values the user asked for that the cloud has not confirmed yet. The cloud is laggy and can drop updates, so on
+    // every poll we re-assert these and keep HomeKit showing the desired value, instead of letting a stale cloud read
+    // revert the user's choice. Keyed by `${dataPoint}:${dataPointPath ?? ''}`.
+    private readonly pendingWrites = new Map<string, { dataPoint: string; dataPointPath: string | undefined; value: string | number; attempts: number }>();
+    private static readonly MAX_WRITE_ATTEMPTS = 3;
 
     private readonly service?: Service;
     private readonly switchServicePowerfulMode?: Service;
@@ -25,8 +34,11 @@ export class ClimateControlService {
     private readonly switchServiceStreamerMode?: Service;
     private readonly switchServiceOutdoorSilentMode?: Service;
     private readonly switchServiceIndoorSilentMode?: Service;
+    private readonly switchServiceFanAutoMode?: Service;
     private readonly switchServiceDryOperationMode?: Service;
     private readonly switchServiceFanOnlyOperationMode?: Service;
+    private readonly outdoorTemperatureSensorService?: Service;
+    private readonly faultContactSensorService?: Service;
 
     constructor(
         platform: DaikinCloudPlatform,
@@ -43,6 +55,7 @@ export class ClimateControlService {
         this.switchServiceStreamerMode = this.accessory.getService(this.extraServices.STREAMER_MODE);
         this.switchServiceOutdoorSilentMode = this.accessory.getService(this.extraServices.OUTDOUR_SILENT_MODE);
         this.switchServiceIndoorSilentMode = this.accessory.getService(this.extraServices.INDOOR_SILENT_MODE);
+        this.switchServiceFanAutoMode = this.accessory.getService(this.extraServices.FAN_AUTO_MODE);
         this.switchServiceDryOperationMode = this.accessory.getService(this.extraServices.DRY_OPERATION_MODE);
         this.switchServiceFanOnlyOperationMode = this.accessory.getService(this.extraServices.FAN_ONLY_OPERATION_MODE);
 
@@ -211,6 +224,26 @@ export class ClimateControlService {
             }
         }
 
+        if (this.hasFanAutoModeFeature() && this.platform.config.showExtraFeatures) {
+            this.platform.log.debug(`[${this.name}] Device has FanAutoMode, add Switch Service`);
+
+            this.switchServiceFanAutoMode = this.switchServiceFanAutoMode || accessory.addService(this.platform.Service.Switch, this.extraServices.FAN_AUTO_MODE, 'fan_auto_mode');
+            this.switchServiceFanAutoMode.setCharacteristic(this.platform.Characteristic.Name, this.extraServices.FAN_AUTO_MODE);
+
+            this.switchServiceFanAutoMode
+                .addOptionalCharacteristic(this.platform.Characteristic.ConfiguredName);
+            this.switchServiceFanAutoMode
+                .setCharacteristic(this.platform.Characteristic.ConfiguredName, this.extraServices.FAN_AUTO_MODE);
+
+            this.switchServiceFanAutoMode.getCharacteristic(this.platform.Characteristic.On)
+                .onGet(this.handleFanAutoModeGet.bind(this))
+                .onSet(this.handleFanAutoModeSet.bind(this));
+        } else {
+            if (this.switchServiceFanAutoMode) {
+                accessory.removeService(this.switchServiceFanAutoMode);
+            }
+        }
+
         if (this.hasDryOperationModeFeature() && this.platform.config.showExtraFeatures) {
             this.platform.log.debug(`[${this.name}] Device has DryOperationMode, add Switch Service`);
 
@@ -250,6 +283,43 @@ export class ClimateControlService {
                 accessory.removeService(this.switchServiceFanOnlyOperationMode);
             }
         }
+
+        // Outdoor temperature sensor: the Onecta app shows it but HomeKit's HeaterCooler can't, so expose it as a
+        // separate TemperatureSensor. Only some adapters report it, so add it conditionally.
+        const outdoorTemperature = accessory.context.device.getData(this.managementPointId, 'sensoryData', '/outdoorTemperature');
+        this.outdoorTemperatureSensorService = this.accessory.getService(this.outdoorTemperatureSensorName);
+        if (outdoorTemperature) {
+            this.outdoorTemperatureSensorService = this.outdoorTemperatureSensorService || accessory.addService(this.platform.Service.TemperatureSensor, this.outdoorTemperatureSensorName, 'outdoor_temperature');
+            this.outdoorTemperatureSensorService.setCharacteristic(this.platform.Characteristic.Name, this.outdoorTemperatureSensorName);
+            this.outdoorTemperatureSensorService.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
+                .onGet(this.handleOutdoorTemperatureGet.bind(this))
+                .updateValue(outdoorTemperature.value);
+        } else if (this.outdoorTemperatureSensorService) {
+            accessory.removeService(this.outdoorTemperatureSensorService);
+        }
+
+        // Fault sensor: exposed as a ContactSensor ("open" == fault) so the user can switch on notifications for it in
+        // the Home app and get pushed when a unit reports an error, without opening the Onecta app.
+        const isInErrorState = accessory.context.device.getData(this.managementPointId, 'isInErrorState', undefined);
+        this.faultContactSensorService = this.accessory.getService(this.faultSensorName);
+        if (isInErrorState) {
+            this.faultContactSensorService = this.faultContactSensorService || accessory.addService(this.platform.Service.ContactSensor, this.faultSensorName, 'fault');
+            this.faultContactSensorService.setCharacteristic(this.platform.Characteristic.Name, this.faultSensorName);
+            this.faultContactSensorService.getCharacteristic(this.platform.Characteristic.ContactSensorState)
+                .onGet(this.handleFaultGet.bind(this))
+                .updateValue(isInErrorState.value
+                    ? this.platform.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+                    : this.platform.Characteristic.ContactSensorState.CONTACT_DETECTED);
+        } else if (this.faultContactSensorService) {
+            accessory.removeService(this.faultContactSensorService);
+        }
+
+        // After every poll the library overwrites its cache with the cloud state and emits 'updated'. We use that to
+        // (a) re-assert any unconfirmed user writes and (b) proactively push the fresh state to HomeKit, so changes
+        // made outside Home (e.g. in the Onecta app) show up without the user having to open the Home app.
+        this.accessory.context.device.on('updated', () => {
+            this.reconcileAndSync().catch((e) => this.platform.log.error(`[${this.name}] Failed to sync after update`, e));
+        });
     }
 
     addOrUpdateCharacteristicRotationSpeed() {
@@ -273,6 +343,141 @@ export class ClimateControlService {
         }
     }
 
+    /**
+     * Send a value to the Daikin cloud and keep HomeKit consistent.
+     *
+     * The underlying daikin-controller-cloud library does NOT update its local cache after a successful PATCH, and
+     * the cloud only reflects the change after a poll (forceUpdateDelay, default 60s). Without compensation a quick
+     * onGet from HomeKit reads the stale value and the control "bounces back". So on success we optimistically write
+     * the new value into the cached datapoint, so subsequent onGets return it until the next poll confirms it.
+     *
+     * On failure we log and throw a HapStatusError, so HomeKit surfaces the failure ("No Response") and reverts the
+     * control, instead of the old behaviour of silently swallowing the error and pretending it worked.
+     */
+    private async setData(dataPoint: string, dataPointPath: string | undefined, value: string | number) {
+        const cachedDatapoint = this.accessory.context.device.getData(this.managementPointId, dataPoint, dataPointPath);
+        try {
+            await this.accessory.context.device.setData(this.managementPointId, dataPoint, dataPointPath as string, value);
+        } catch (e) {
+            this.platform.log.error(`[${this.name}] Failed to set ${dataPoint}${dataPointPath ? ' ' + dataPointPath : ''} to ${value}`, e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
+            throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+        }
+        if (cachedDatapoint) {
+            cachedDatapoint.value = value;
+        }
+        // Remember the desired value so a later poll that still reads the old cloud state doesn't revert it.
+        this.pendingWrites.set(`${dataPoint}:${dataPointPath ?? ''}`, {dataPoint, dataPointPath, value, attempts: 0});
+        this.platform.forceUpdateDevices();
+    }
+
+    /**
+     * Runs on every poll ('updated' event). Re-asserts unconfirmed user writes (write-wins) and pushes the current
+     * state to HomeKit so external changes become visible.
+     */
+    private async reconcileAndSync() {
+        const device = this.accessory.context.device;
+
+        for (const [key, pending] of this.pendingWrites) {
+            const cached = device.getData(this.managementPointId, pending.dataPoint, pending.dataPointPath);
+            const cloudValue = cached?.value;
+
+            if (cloudValue === pending.value) {
+                this.platform.log.debug(`[${this.name}] Cloud confirmed ${key} = ${pending.value}`);
+                this.pendingWrites.delete(key);
+                continue;
+            }
+
+            if (pending.attempts >= ClimateControlService.MAX_WRITE_ATTEMPTS) {
+                this.platform.log.warn(`[${this.name}] Giving up on ${key} = ${pending.value} after ${pending.attempts} attempts, accepting cloud value ${cloudValue}`);
+                this.pendingWrites.delete(key);
+                continue;
+            }
+
+            pending.attempts++;
+            if (cached) {
+                cached.value = pending.value; // keep HomeKit showing the desired value
+            }
+            this.platform.log.debug(`[${this.name}] Re-asserting ${key} = ${pending.value} (attempt ${pending.attempts})`);
+            try {
+                await device.setData(this.managementPointId, pending.dataPoint, pending.dataPointPath as string, pending.value);
+            } catch (e) {
+                this.platform.log.error(`[${this.name}] Failed to re-assert ${key} = ${pending.value}`, e);
+            }
+        }
+
+        if (this.pendingWrites.size > 0) {
+            this.platform.forceUpdateDevices(); // schedule another poll to verify the re-asserted writes
+        }
+
+        await this.syncToHomeKit();
+    }
+
+    /**
+     * Push the current cached state to HomeKit. Each push is guarded so a missing datapoint just skips that
+     * characteristic instead of breaking the whole sync.
+     */
+    private async syncToHomeKit() {
+        if (!this.service) {
+            return;
+        }
+        const C = this.platform.Characteristic;
+
+        await this.push(this.service, C.Active, () => this.handleActiveStateGet());
+        await this.push(this.service, C.CurrentTemperature, () => this.handleCurrentTemperatureGet());
+        await this.push(this.service, C.TargetHeaterCoolerState, () => this.handleTargetHeaterCoolerStateGet());
+        if (this.service.testCharacteristic(C.CoolingThresholdTemperature)) {
+            await this.push(this.service, C.CoolingThresholdTemperature, () => this.handleCoolingThresholdTemperatureGet());
+        }
+        if (this.service.testCharacteristic(C.HeatingThresholdTemperature)) {
+            await this.push(this.service, C.HeatingThresholdTemperature, () => this.handleHeatingThresholdTemperatureGet());
+        }
+        if (this.service.testCharacteristic(C.RotationSpeed)) {
+            await this.push(this.service, C.RotationSpeed, () => this.handleRotationSpeedGet());
+        }
+        if (this.hasSwingModeFeature()) {
+            await this.push(this.service, C.SwingMode, () => this.handleSwingModeGet());
+        }
+
+        if (this.switchServicePowerfulMode) {
+            await this.push(this.switchServicePowerfulMode, C.On, () => this.handlePowerfulModeGet());
+        }
+        if (this.switchServiceEconoMode) {
+            await this.push(this.switchServiceEconoMode, C.On, () => this.handleEconoModeGet());
+        }
+        if (this.switchServiceStreamerMode) {
+            await this.push(this.switchServiceStreamerMode, C.On, () => this.handleStreamerModeGet());
+        }
+        if (this.switchServiceOutdoorSilentMode) {
+            await this.push(this.switchServiceOutdoorSilentMode, C.On, () => this.handleOutdoorSilentModeGet());
+        }
+        if (this.switchServiceIndoorSilentMode) {
+            await this.push(this.switchServiceIndoorSilentMode, C.On, () => this.handleIndoorSilentModeGet());
+        }
+        if (this.switchServiceFanAutoMode) {
+            await this.push(this.switchServiceFanAutoMode, C.On, () => this.handleFanAutoModeGet());
+        }
+        if (this.switchServiceDryOperationMode) {
+            await this.push(this.switchServiceDryOperationMode, C.On, () => this.handleDryOperationModeGet());
+        }
+        if (this.switchServiceFanOnlyOperationMode) {
+            await this.push(this.switchServiceFanOnlyOperationMode, C.On, () => this.handleFanOnlyOperationModeGet());
+        }
+        if (this.outdoorTemperatureSensorService) {
+            await this.push(this.outdoorTemperatureSensorService, C.CurrentTemperature, () => this.handleOutdoorTemperatureGet());
+        }
+        if (this.faultContactSensorService) {
+            await this.push(this.faultContactSensorService, C.ContactSensorState, () => this.handleFaultGet());
+        }
+    }
+
+    private async push(service: Service, characteristic: Parameters<Service['updateCharacteristic']>[0], getter: () => Promise<CharacteristicValue>) {
+        try {
+            service.updateCharacteristic(characteristic, await getter());
+        } catch (e) {
+            this.platform.log.debug(`[${this.name}] Skip syncing characteristic: ${e}`);
+        }
+    }
+
     async handleActiveStateGet(): Promise<CharacteristicValue> {
         const state = this.accessory.context.device.getData(this.managementPointId, 'onOffMode', undefined).value;
         this.platform.log.debug(`[${this.name}] GET ActiveState, state: ${state}, last update: ${this.accessory.context.device.getLastUpdated()}`);
@@ -282,18 +487,28 @@ export class ClimateControlService {
     async handleActiveStateSet(value: CharacteristicValue) {
         this.platform.log.debug(`[${this.name}] SET ActiveState, state: ${value}`);
         const state = value as boolean;
-        try {
-            await this.accessory.context.device.setData(this.managementPointId, 'onOffMode', state ? DaikinOnOffModes.ON : DaikinOnOffModes.OFF, undefined);
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
-        this.platform.forceUpdateDevices();
+        await this.setData('onOffMode', undefined, state ? DaikinOnOffModes.ON : DaikinOnOffModes.OFF);
     }
 
     async handleCurrentTemperatureGet(): Promise<CharacteristicValue> {
         const temperature = this.accessory.context.device.getData(this.managementPointId, 'sensoryData', '/' + this.getCurrentControlMode()).value;
         this.platform.log.debug(`[${this.name}] GET CurrentTemperature, temperature: ${temperature}, last update: ${this.accessory.context.device.getLastUpdated()}`);
         return temperature;
+    }
+
+    async handleOutdoorTemperatureGet(): Promise<CharacteristicValue> {
+        const temperature = this.accessory.context.device.getData(this.managementPointId, 'sensoryData', '/outdoorTemperature').value;
+        this.platform.log.debug(`[${this.name}] GET OutdoorTemperature, temperature: ${temperature}, last update: ${this.accessory.context.device.getLastUpdated()}`);
+        return temperature;
+    }
+
+    async handleFaultGet(): Promise<CharacteristicValue> {
+        const isInErrorState = this.accessory.context.device.getData(this.managementPointId, 'isInErrorState', undefined).value;
+        this.platform.log.debug(`[${this.name}] GET Fault, isInErrorState: ${isInErrorState}, last update: ${this.accessory.context.device.getLastUpdated()}`);
+        // ContactSensor: "contact not detected" (open) signals a fault, so the Home app can notify on it.
+        return isInErrorState
+            ? this.platform.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+            : this.platform.Characteristic.ContactSensorState.CONTACT_DETECTED;
     }
 
     async handleCoolingThresholdTemperatureGet(): Promise<CharacteristicValue> {
@@ -304,15 +519,8 @@ export class ClimateControlService {
 
     async handleCoolingThresholdTemperatureSet(value: CharacteristicValue) {
         const temperature = Math.round(value as number * 2) / 2;
-        // const temperature = value as number;
         this.platform.log.debug(`[${this.name}] SET CoolingThresholdTemperature, temperature to: ${temperature}`);
-        try {
-            await this.accessory.context.device.setData(this.managementPointId, 'temperatureControl', `/operationModes/${DaikinOperationModes.COOLING}/setpoints/${this.getSetpoint(DaikinOperationModes.COOLING)}`, temperature);
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
-
-        this.platform.forceUpdateDevices();
+        await this.setData('temperatureControl', `/operationModes/${DaikinOperationModes.COOLING}/setpoints/${this.getSetpoint(DaikinOperationModes.COOLING)}`, temperature);
     }
 
     async handleRotationSpeedGet(): Promise<CharacteristicValue> {
@@ -324,14 +532,8 @@ export class ClimateControlService {
     async handleRotationSpeedSet(value: CharacteristicValue) {
         const speed = value as number;
         this.platform.log.debug(`[${this.name}] SET RotationSpeed, speed to: ${speed}`);
-        try {
-            await this.accessory.context.device.setData(this.managementPointId, 'fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/currentMode`, 'fixed');
-            await this.accessory.context.device.setData(this.managementPointId, 'fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/modes/fixed`, speed);
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
-
-        this.platform.forceUpdateDevices();
+        await this.setData('fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/currentMode`, 'fixed');
+        await this.setData('fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/modes/fixed`, speed);
     }
 
     async handleHeatingThresholdTemperatureGet(): Promise<CharacteristicValue> {
@@ -341,15 +543,9 @@ export class ClimateControlService {
     }
 
     async handleHeatingThresholdTemperatureSet(value: CharacteristicValue) {
-        try {
-            const temperature = Math.round(value as number * 2) / 2;
-            // const temperature = value as number;
-            this.platform.log.debug(`[${this.name}] SET HeatingThresholdTemperature, temperature to: ${temperature}`);
-            await this.accessory.context.device.setData(this.managementPointId, 'temperatureControl', `/operationModes/${DaikinOperationModes.HEATING}/setpoints/${this.getSetpoint(DaikinOperationModes.HEATING)}`, temperature);
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
+        const temperature = Math.round(value as number * 2) / 2;
+        this.platform.log.debug(`[${this.name}] SET HeatingThresholdTemperature, temperature to: ${temperature}`);
+        await this.setData('temperatureControl', `/operationModes/${DaikinOperationModes.HEATING}/setpoints/${this.getSetpoint(DaikinOperationModes.HEATING)}`, temperature);
     }
 
     async handleTargetHeaterCoolerStateGet(): Promise<CharacteristicValue> {
@@ -386,33 +582,22 @@ export class ClimateControlService {
                 break;
         }
 
-        try {
-            this.platform.log.debug(`[${this.name}] SET TargetHeaterCoolerState, daikinOperationMode to: ${daikinOperationMode}`);
-            await this.accessory.context.device.setData(this.managementPointId, 'operationMode', daikinOperationMode, undefined);
-            await this.accessory.context.device.setData(this.managementPointId, 'onOffMode', DaikinOnOffModes.ON, undefined);
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
+        this.platform.log.debug(`[${this.name}] SET TargetHeaterCoolerState, daikinOperationMode to: ${daikinOperationMode}`);
+        await this.setData('operationMode', undefined, daikinOperationMode);
+        await this.setData('onOffMode', undefined, DaikinOnOffModes.ON);
     }
 
     async handleSwingModeSet(value: CharacteristicValue) {
-        try {
-            const swingMode = value as number;
-            const daikinSwingMode = swingMode === 1 ? DaikinFanDirectionHorizontalModes.SWING : DaikinFanDirectionHorizontalModes.STOP;
-            this.platform.log.debug(`[${this.name}] SET SwingMode, swingmode to: ${swingMode}/${daikinSwingMode}`);
+        const swingMode = value as number;
+        const daikinSwingMode = swingMode === 1 ? DaikinFanDirectionHorizontalModes.SWING : DaikinFanDirectionHorizontalModes.STOP;
+        this.platform.log.debug(`[${this.name}] SET SwingMode, swingmode to: ${swingMode}/${daikinSwingMode}`);
 
-            if (this.hasSwingModeHorizontalFeature()) {
-                await this.accessory.context.device.setData(this.managementPointId, 'fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanDirection/horizontal/currentMode`, daikinSwingMode);
-            }
+        if (this.hasSwingModeHorizontalFeature()) {
+            await this.setData('fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanDirection/horizontal/currentMode`, daikinSwingMode);
+        }
 
-            if (this.hasSwingModeVerticalFeature()) {
-                await this.accessory.context.device.setData(this.managementPointId, 'fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanDirection/vertical/currentMode`, daikinSwingMode);
-            }
-
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
+        if (this.hasSwingModeVerticalFeature()) {
+            await this.setData('fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanDirection/vertical/currentMode`, daikinSwingMode);
         }
     }
 
@@ -436,14 +621,9 @@ export class ClimateControlService {
     }
 
     async handlePowerfulModeSet(value: CharacteristicValue) {
-        try {
-            this.platform.log.debug(`[${this.name}] SET PowerfulMode to: ${value}`);
-            const daikinPowerfulMode = value as boolean ? DaikinPowerfulModes.ON : DaikinPowerfulModes.OFF;
-            await this.accessory.context.device.setData(this.managementPointId, 'powerfulMode', daikinPowerfulMode, undefined);
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
+        this.platform.log.debug(`[${this.name}] SET PowerfulMode to: ${value}`);
+        const daikinPowerfulMode = value as boolean ? DaikinPowerfulModes.ON : DaikinPowerfulModes.OFF;
+        await this.setData('powerfulMode', undefined, daikinPowerfulMode);
     }
 
     async handleEconoModeGet() {
@@ -453,14 +633,9 @@ export class ClimateControlService {
     }
 
     async handleEconoModeSet(value: CharacteristicValue) {
-        try {
-            this.platform.log.debug(`[${this.name}] SET EconoMode to: ${value}`);
-            const daikinEconoMode = value as boolean ? DaikinEconoModes.ON : DaikinEconoModes.OFF;
-            await this.accessory.context.device.setData(this.managementPointId, 'econoMode', daikinEconoMode, undefined);
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
+        this.platform.log.debug(`[${this.name}] SET EconoMode to: ${value}`);
+        const daikinEconoMode = value as boolean ? DaikinEconoModes.ON : DaikinEconoModes.OFF;
+        await this.setData('econoMode', undefined, daikinEconoMode);
     }
 
     async handleStreamerModeGet() {
@@ -470,14 +645,9 @@ export class ClimateControlService {
     }
 
     async handleStreamerModeSet(value: CharacteristicValue) {
-        try {
-            this.platform.log.debug(`[${this.name}] SET streamerMode to: ${value}`);
-            const daikinStreamerMode = value as boolean ? DaikinStreamerModes.ON : DaikinStreamerModes.OFF;
-            await this.accessory.context.device.setData(this.managementPointId, 'streamerMode', daikinStreamerMode, undefined);
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
+        this.platform.log.debug(`[${this.name}] SET streamerMode to: ${value}`);
+        const daikinStreamerMode = value as boolean ? DaikinStreamerModes.ON : DaikinStreamerModes.OFF;
+        await this.setData('streamerMode', undefined, daikinStreamerMode);
     }
 
     async handleOutdoorSilentModeGet() {
@@ -487,14 +657,9 @@ export class ClimateControlService {
     }
 
     async handleOutdoorSilentModeSet(value: CharacteristicValue) {
-        try {
-            this.platform.log.debug(`[${this.name}] SET outdoorSilentMode to: ${value}`);
-            const daikinOutdoorSilentMode = value as boolean ? DaikinOutdoorSilentModes.ON : DaikinOutdoorSilentModes.OFF;
-            await this.accessory.context.device.setData(this.managementPointId, 'outdoorSilentMode', daikinOutdoorSilentMode, undefined);
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
+        this.platform.log.debug(`[${this.name}] SET outdoorSilentMode to: ${value}`);
+        const daikinOutdoorSilentMode = value as boolean ? DaikinOutdoorSilentModes.ON : DaikinOutdoorSilentModes.OFF;
+        await this.setData('outdoorSilentMode', undefined, daikinOutdoorSilentMode);
     }
 
     async handleIndoorSilentModeGet() {
@@ -504,14 +669,23 @@ export class ClimateControlService {
     }
 
     async handleIndoorSilentModeSet(value: CharacteristicValue) {
-        try {
-            this.platform.log.debug(`[${this.name}] SET indoorSilentMode to: ${value}`);
-            const daikinFanSpeedMode = value as boolean ? DaikinFanSpeedModes.QUIET : DaikinFanSpeedModes.FIXED;
-            await this.accessory.context.device.setData(this.managementPointId, 'fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/currentMode`, daikinFanSpeedMode);
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
+        this.platform.log.debug(`[${this.name}] SET indoorSilentMode to: ${value}`);
+        const daikinFanSpeedMode = value as boolean ? DaikinFanSpeedModes.QUIET : DaikinFanSpeedModes.FIXED;
+        await this.setData('fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/currentMode`, daikinFanSpeedMode);
+    }
+
+    async handleFanAutoModeGet() {
+        const fanAutoModeOn = this.accessory.context.device.getData(this.managementPointId, 'fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/currentMode`).value === DaikinFanSpeedModes.AUTO;
+        this.platform.log.debug(`[${this.name}] GET FanAutoMode, fanAutoModeOn: ${fanAutoModeOn}, last update: ${this.accessory.context.device.getLastUpdated()}`);
+        return fanAutoModeOn;
+    }
+
+    async handleFanAutoModeSet(value: CharacteristicValue) {
+        this.platform.log.debug(`[${this.name}] SET fanAutoMode to: ${value}`);
+        // Auto and the manual speed (fixed) are mutually exclusive modes of the same fanSpeed datapoint, so turning
+        // Auto off falls back to manual/fixed.
+        const daikinFanSpeedMode = value as boolean ? DaikinFanSpeedModes.AUTO : DaikinFanSpeedModes.FIXED;
+        await this.setData('fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/currentMode`, daikinFanSpeedMode);
     }
 
     async handleDryOperationModeGet() {
@@ -522,14 +696,9 @@ export class ClimateControlService {
     }
 
     async handleDryOperationModeSet(value: CharacteristicValue) {
-        try {
-            this.platform.log.debug(`[${this.name}] SET DryOperationMode to: ${value}`);
-            const daikinOperationMode = value as boolean ? DaikinOperationModes.DRY : DaikinOperationModes.AUTO;
-            await this.accessory.context.device.setData(this.managementPointId, 'operationMode', daikinOperationMode, undefined);
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
+        this.platform.log.debug(`[${this.name}] SET DryOperationMode to: ${value}`);
+        const daikinOperationMode = value as boolean ? DaikinOperationModes.DRY : DaikinOperationModes.AUTO;
+        await this.setData('operationMode', undefined, daikinOperationMode);
     }
 
     async handleFanOnlyOperationModeGet() {
@@ -539,14 +708,9 @@ export class ClimateControlService {
     }
 
     async handleFanOnlyOperationModeSet(value: CharacteristicValue) {
-        try {
-            this.platform.log.debug(`[${this.name}] SET FanOnlyOperationMode to: ${value}`);
-            const daikinOperationMode = value as boolean ? DaikinOperationModes.FAN_ONLY : DaikinOperationModes.AUTO;
-            await this.accessory.context.device.setData(this.managementPointId, 'operationMode', daikinOperationMode, undefined);
-            this.platform.forceUpdateDevices();
-        } catch (e) {
-            this.platform.log.error('Failed to set', e, JSON.stringify(DaikinCloudRepo.maskSensitiveCloudDeviceData(this.accessory.context.device.desc), null, 4));
-        }
+        this.platform.log.debug(`[${this.name}] SET FanOnlyOperationMode to: ${value}`);
+        const daikinOperationMode = value as boolean ? DaikinOperationModes.FAN_ONLY : DaikinOperationModes.AUTO;
+        await this.setData('operationMode', undefined, daikinOperationMode);
     }
 
     getCurrentOperationMode(): DaikinOperationModes {
@@ -672,6 +836,16 @@ export class ClimateControlService {
         const fanSpeedValues: Array<string> = currentModeFanControl.values;
         this.platform.log.debug(`[${this.name}] hasIndoorSilentModeFeature, indoorSilentMode: ${fanSpeedValues.includes(DaikinFanSpeedModes.QUIET)}`);
         return fanSpeedValues.includes(DaikinFanSpeedModes.QUIET);
+    }
+
+    hasFanAutoModeFeature() {
+        const currentModeFanControl = this.accessory.context.device.getData(this.managementPointId, 'fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/currentMode`);
+        if (!currentModeFanControl) {
+            return false;
+        }
+        const fanSpeedValues: Array<string> = currentModeFanControl.values;
+        this.platform.log.debug(`[${this.name}] hasFanAutoModeFeature, fanAutoMode: ${fanSpeedValues.includes(DaikinFanSpeedModes.AUTO)}`);
+        return fanSpeedValues.includes(DaikinFanSpeedModes.AUTO);
     }
 
     hasOperationMode(operationMode: DaikinOperationModes) {

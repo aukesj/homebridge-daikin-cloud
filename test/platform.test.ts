@@ -30,7 +30,7 @@ test('Initialize platform', async () => {
         'oidcClientSecret': 'CLIENT_SECRET',
         'oidcTokenSetFilePath': `${api.user.storagePath()}/.daikin-controller-cloud-tokenset`,
     });
-    expect(platform.updateIntervalDelay).toBe(900000);
+    expect(platform.updateIntervalDelay).toBe(600000);
 });
 
 test('DaikinCloudPlatform with new Aircondition accessory', (done) => {

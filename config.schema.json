@@ -59,9 +59,9 @@
       "updateIntervalInMinutes": {
         "title": "Update interval in minutes",
         "type": "integer",
-        "default": 15,
+        "default": 10,
         "minimum": 1,
-        "description": "Interval in minutes when we poll the Daikin API. Because of rate limitations we recommend to leave this at 15 minutes. This will result in 96 calls to the API per day ((24 * 60) / 15). The rate limit per day is 200."
+        "description": "Interval in minutes when we poll the Daikin API. One poll is a single API call for all your devices together. At 10 minutes this is 144 calls per day ((24 * 60) / 10); the rate limit is 200 per day, so this leaves room for the calls made when you change something. Lower values make status updates (e.g. changes made in the Onecta app) show up faster but use more of your daily limit."
       },
       "forceUpdateDelay": {
         "title": "Force update delay (in ms)",
