@@ -16,6 +16,17 @@ import {althermaMiladcerkic} from './fixtures/altherma-miladcerkic';
 import {HomebridgeAPI} from 'homebridge/lib/api.js';
 import { Logger } from 'homebridge/lib/logger.js';
 
+// Setters now propagate failures to HomeKit instead of swallowing them. A real cloud rejection (e.g. a read-only
+// datapoint or a mode the fixture doesn't support) surfaces as a HapStatusError, which is acceptable for a smoke
+// test. Only an unexpected error type (a programming bug) should fail the test.
+async function expectSettable(fn: () => Promise<void>) {
+    try {
+        await fn();
+    } catch (e) {
+        expect((e as Error)?.constructor?.name).toBe('HapStatusError');
+    }
+}
+
 type DeviceState = {
     activeState: boolean;
     currentTemperature: number;
@@ -156,7 +167,7 @@ test.each<Array<string | string | any | DeviceState>>([
         },
     ],
 ])('Create DaikinCloudThermostatAccessory with %s device', async (name, climateControlEmbeddedId, deviceJson, state) => {
-    const device = new DaikinCloudDevice(deviceJson, undefined as unknown as OnectaClient);
+    const device = new DaikinCloudDevice(structuredClone(deviceJson), ({requestResource: async () => true}) as unknown as OnectaClient);
 
     jest.spyOn(DaikinCloudController.prototype, 'getCloudDevices').mockImplementation(async () => {
         return [device];
@@ -178,35 +189,25 @@ test.each<Array<string | string | any | DeviceState>>([
 
     if (typeof state.activeState !== 'undefined') {
         expect(await homebridgeAccessory.service?.handleActiveStateGet()).toBe(state.activeState);
-        expect(async () => {
-            await homebridgeAccessory.service?.handleActiveStateSet(1);
-        }).not.toThrow();
-        expect(async () => {
-            await homebridgeAccessory.service?.handleActiveStateSet(0);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service!.handleActiveStateSet(1));
+        await expectSettable(() => homebridgeAccessory.service!.handleActiveStateSet(0));
     }
 
     expect(await homebridgeAccessory.service?.handleCurrentTemperatureGet()).toBe(state.currentTemperature);
 
     if (typeof state.coolingThresholdTemperature !== 'undefined') {
         expect(await homebridgeAccessory.service?.handleCoolingThresholdTemperatureGet()).toBe(state.coolingThresholdTemperature);
-        expect(async () => {
-            await homebridgeAccessory.service?.handleCoolingThresholdTemperatureSet(21);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service!.handleCoolingThresholdTemperatureSet(state.coolingThresholdTemperature));
     }
 
     if (typeof state.heatingThresholdTemperature !== 'undefined') {
         expect(await homebridgeAccessory.service?.handleHeatingThresholdTemperatureGet()).toBe(state.heatingThresholdTemperature);
-        expect(async () => {
-            await homebridgeAccessory.service?.handleHeatingThresholdTemperatureSet(25);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service!.handleHeatingThresholdTemperatureSet(state.heatingThresholdTemperature));
     }
 
     if (typeof state.targetHeaterCoolerState !== 'undefined') {
         expect(await homebridgeAccessory.service?.handleTargetHeaterCoolerStateGet()).toBe(state.targetHeaterCoolerState);
-        expect(async () => {
-            await homebridgeAccessory.service?.handleTargetHeaterCoolerStateSet(1);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service!.handleTargetHeaterCoolerStateSet(state.targetHeaterCoolerState));
     }
 
 
@@ -229,7 +230,7 @@ test.each<Array<string | string | any | DeviceState>>([
 });
 
 test('DaikinCloudAirConditioningAccessory Getters', async () => {
-    const device = new DaikinCloudDevice(althermaHeatPump, undefined as unknown as OnectaClient);
+    const device = new DaikinCloudDevice(structuredClone(althermaHeatPump), ({requestResource: async () => true}) as unknown as OnectaClient);
 
     jest.spyOn(DaikinCloudController.prototype, 'getCloudDevices').mockImplementation(async () => {
         return [device];
@@ -251,7 +252,7 @@ test('DaikinCloudAirConditioningAccessory Getters', async () => {
 });
 
 test('DaikinCloudAirConditioningAccessory Setters', async () => {
-    const device = new DaikinCloudDevice(althermaHeatPump, undefined as unknown as OnectaClient);
+    const device = new DaikinCloudDevice(structuredClone(althermaHeatPump), ({requestResource: async () => true}) as unknown as OnectaClient);
 
     jest.spyOn(DaikinCloudController.prototype, 'getCloudDevices').mockImplementation(async () => {
         return [device];
@@ -269,10 +270,10 @@ test('DaikinCloudAirConditioningAccessory Setters', async () => {
     const homebridgeAccessory = new daikinAlthermaAccessory(new DaikinCloudPlatform(new Logger(), config, api), accessory as unknown as PlatformAccessory<DaikinCloudAccessoryContext>);
 
     await homebridgeAccessory.service?.handleActiveStateSet(1);
-    expect(setDataSpy).toHaveBeenNthCalledWith(1, 'climateControlMainZone', 'onOffMode', 'on', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(1, 'climateControlMainZone', 'onOffMode', undefined, 'on');
 
     await homebridgeAccessory.service?.handleActiveStateSet(0);
-    expect(setDataSpy).toHaveBeenNthCalledWith(2, 'climateControlMainZone', 'onOffMode', 'off', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(2, 'climateControlMainZone', 'onOffMode', undefined, 'off');
 
     await homebridgeAccessory.service?.handleCoolingThresholdTemperatureSet(21);
     expect(setDataSpy).toHaveBeenNthCalledWith(3, 'climateControlMainZone', 'temperatureControl', '/operationModes/cooling/setpoints/roomTemperature', 21);
@@ -281,8 +282,8 @@ test('DaikinCloudAirConditioningAccessory Setters', async () => {
     expect(setDataSpy).toHaveBeenNthCalledWith(4, 'climateControlMainZone', 'temperatureControl', '/operationModes/heating/setpoints/roomTemperature', 25);
 
     await homebridgeAccessory.service?.handleTargetHeaterCoolerStateSet(1);
-    expect(setDataSpy).toHaveBeenNthCalledWith(5, 'climateControlMainZone', 'operationMode', 'heating', undefined);
-    expect(setDataSpy).toHaveBeenNthCalledWith(6, 'climateControlMainZone', 'onOffMode', 'on', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(5, 'climateControlMainZone', 'operationMode', undefined, 'heating');
+    expect(setDataSpy).toHaveBeenNthCalledWith(6, 'climateControlMainZone', 'onOffMode', undefined, 'on');
 
 
 });

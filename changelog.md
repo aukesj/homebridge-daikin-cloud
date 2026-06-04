@@ -5,6 +5,40 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [3.0.0] - 2026-06-04
+
+This is a renamed fork (`homebridge-daikin-onecta`, platform `DaikinOnecta`) so it can run alongside or in place of the
+original plugin. Because the plugin name and the accessory serial numbers change, HomeKit will see the devices as new
+accessories: you will need to re-assign rooms and re-create scenes/automations once after switching.
+
+### Fixed
+
+- **Turning on one air conditioner could turn on all of them.** The debug-logging mask helper overwrote
+  `serialNumber.value` with `'REDACTED'` in place — on the live device cache — for every device just before its
+  accessory was created. All accessories then got the identical SerialNumber `'REDACTED'`, so the Apple Home app
+  treated them as one physical accessory and mirrored commands. The mask now deep-clones first and no longer touches
+  the real data. (As an extra safeguard, when a device genuinely reports no serial number the accessory now falls back
+  to the unique device id instead of a constant.)
+- Failed cloud writes are no longer swallowed silently: they surface to HomeKit (which shows "No Response" and reverts)
+  instead of pretending the change succeeded.
+
+### Added
+
+- **State stays consistent with a laggy cloud.** A value you set is held and re-asserted to the cloud until confirmed,
+  so a poll that still reads the old cloud state no longer reverts your choice (e.g. setpoint jumping back).
+- **External changes show up automatically.** After each poll the current state is pushed to HomeKit, so changes made
+  in the Onecta app appear without having to open the Home app.
+- **Outdoor temperature sensor** (when the device reports it).
+- **Fault sensor** as a contact sensor ("open" == fault) so you can enable Home notifications for unit errors.
+- **Auto fan speed switch** alongside the existing manual fan-speed slider and indoor-silent switch (needs
+  `showExtraFeatures`).
+- Firmware version is now shown on the accessory.
+
+### Changed
+
+- Default poll interval lowered from 15 to 10 minutes (one poll is a single API call for all devices; 10 min = 144/day,
+  within the 200/day rate limit) so external changes show up sooner.
+
 ## [2.9.0] - 2025-01-30
 
 ### Added

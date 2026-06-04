@@ -1,9 +1,9 @@
 {
-  "displayName": "Daikin Cloud",
-  "platformname": "daikincloud",
-  "name": "homebridge-daikin-cloud",
-  "version": "2.9.0",
-  "description": "Integrate with the Daikin Cloud to control your Daikin air conditioning via the cloud",
+  "displayName": "Daikin Onecta",
+  "platformname": "daikinonecta",
+  "name": "homebridge-daikin-onecta",
+  "version": "3.0.0",
+  "description": "Integrate with the Daikin Onecta (Daikin Cloud) to control your Daikin air conditioning via the cloud",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

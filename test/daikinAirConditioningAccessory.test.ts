@@ -14,6 +14,17 @@ import {dx23Airco2} from './fixtures/dx23-airco-2';
 import {HomebridgeAPI} from 'homebridge/lib/api.js';
 import {Logger} from 'homebridge/lib/logger.js';
 
+// Setters now propagate failures to HomeKit instead of swallowing them. A real cloud rejection (e.g. a datapoint
+// that is read-only or a mode the fixture doesn't support) surfaces as a HapStatusError, which is acceptable for a
+// smoke test. Only an unexpected error type (a programming bug) should fail the test.
+async function expectSettable(fn: () => Promise<void>) {
+    try {
+        await fn();
+    } catch (e) {
+        expect((e as Error)?.constructor?.name).toBe('HapStatusError');
+    }
+}
+
 type DeviceState = {
 	activeState: boolean;
 	currentTemperature: number;
@@ -138,7 +149,7 @@ test.each<Array<string | string | any | DeviceState>>([
         },
     ],
 ])('Create DaikinCloudAirConditioningAccessory with %s device', async (name: string, climateControlEmbeddedId: string, deviceJson, state: DeviceState) => {
-    const device = new DaikinCloudDevice(deviceJson, undefined as unknown as OnectaClient);
+    const device = new DaikinCloudDevice(structuredClone(deviceJson), ({requestResource: async () => true}) as unknown as OnectaClient);
 
     jest.spyOn(DaikinCloudController.prototype, 'getCloudDevices').mockImplementation(async () => {
         return [device];
@@ -157,86 +168,64 @@ test.each<Array<string | string | any | DeviceState>>([
 
     const homebridgeAccessory = new daikinAirConditioningAccessory(new DaikinCloudPlatform(new Logger(), config, api), accessory as unknown as PlatformAccessory<DaikinCloudAccessoryContext>);
 
+    // Use the device's own current (valid) values for setters so we exercise the happy path. expectSettable tolerates
+    // a clean HapStatusError for fixtures where a datapoint is read-only or a mode is unsupported.
     if (typeof state.activeState !== 'undefined') {
         expect(await homebridgeAccessory.service.handleActiveStateGet()).toBe(state.activeState);
-        expect(async () => {
-            await homebridgeAccessory.service.handleActiveStateSet(1);
-        }).not.toThrow();
-        expect(async () => {
-            await homebridgeAccessory.service.handleActiveStateSet(0);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleActiveStateSet(1));
+        await expectSettable(() => homebridgeAccessory.service.handleActiveStateSet(0));
     }
 
     expect(await homebridgeAccessory.service.handleCurrentTemperatureGet()).toBe(state.currentTemperature);
 
     if (typeof state.coolingThresholdTemperature !== 'undefined') {
         expect(await homebridgeAccessory.service.handleCoolingThresholdTemperatureGet()).toBe(state.coolingThresholdTemperature);
-        expect(async () => {
-            await homebridgeAccessory.service.handleCoolingThresholdTemperatureSet(21);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleCoolingThresholdTemperatureSet(state.coolingThresholdTemperature));
     }
 
     if (typeof state.heatingThresholdTemperature !== 'undefined') {
         expect(await homebridgeAccessory.service.handleHeatingThresholdTemperatureGet()).toBe(state.heatingThresholdTemperature);
-        expect(async () => {
-            await homebridgeAccessory.service.handleHeatingThresholdTemperatureSet(25);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleHeatingThresholdTemperatureSet(state.heatingThresholdTemperature));
     }
 
     if (typeof state.rotationSpeed !== 'undefined') {
         expect(await homebridgeAccessory.service.handleRotationSpeedGet()).toBe(state.rotationSpeed);
-        expect(async () => {
-            await homebridgeAccessory.service.handleRotationSpeedSet(50);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleRotationSpeedSet(state.rotationSpeed));
     }
 
     if (typeof state.targetHeaterCoolerState !== 'undefined') {
         expect(await homebridgeAccessory.service.handleTargetHeaterCoolerStateGet()).toBe(state.targetHeaterCoolerState);
-        expect(async () => {
-            await homebridgeAccessory.service.handleTargetHeaterCoolerStateSet(1);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleTargetHeaterCoolerStateSet(state.targetHeaterCoolerState));
     }
 
     if (typeof state.swingMode !== 'undefined') {
         expect(await homebridgeAccessory.service.handleSwingModeGet()).toBe(state.swingMode);
-        expect(async () => {
-            await homebridgeAccessory.service.handleSwingModeSet(1);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleSwingModeSet(1));
     }
 
     if (typeof state.powerfulMode !== 'undefined') {
         expect(await homebridgeAccessory.service.handlePowerfulModeGet()).toBe(state.powerfulMode);
-        expect(async () => {
-            await homebridgeAccessory.service.handlePowerfulModeSet(1);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handlePowerfulModeSet(1));
     }
 
     if (typeof state.econoMode !== 'undefined') {
         expect(await homebridgeAccessory.service.handleEconoModeGet()).toBe(state.econoMode);
-        expect(async () => {
-            await homebridgeAccessory.service.handleEconoModeSet(1);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleEconoModeSet(1));
     }
 
     if (typeof state.streamerMode !== 'undefined') {
         expect(await homebridgeAccessory.service.handleStreamerModeGet()).toBe(state.streamerMode);
-        expect(async () => {
-            await homebridgeAccessory.service.handleStreamerModeSet(1);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleStreamerModeSet(1));
     }
 
     if (typeof state.outdoorSilentMode !== 'undefined') {
         expect(await homebridgeAccessory.service.handleOutdoorSilentModeGet()).toBe(state.outdoorSilentMode);
-        expect(async () => {
-            await homebridgeAccessory.service.handleOutdoorSilentModeSet(1);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleOutdoorSilentModeSet(1));
     }
 
     if (typeof state.indoorSilentMode !== 'undefined') {
         expect(await homebridgeAccessory.service.handleIndoorSilentModeGet()).toBe(state.indoorSilentMode);
-        expect(async () => {
-            await homebridgeAccessory.service.handleIndoorSilentModeSet(1);
-        }).not.toThrow();
+        await expectSettable(() => homebridgeAccessory.service.handleIndoorSilentModeSet(1));
     }
 
     if (typeof state.dryOperationMode !== 'undefined') {
@@ -252,7 +241,7 @@ test.each<Array<string | string | any>>([
     ['dx4', 'climateControl', dx4Airco],
     ['dx23', 'climateControl', dx23Airco],
 ])('Create DaikinCloudAirConditioningAccessory with %s device, showExtraFeatures disabled', async (name, climateControlEmbeddedId, deviceJson) => {
-    const device = new DaikinCloudDevice(deviceJson, undefined as unknown as OnectaClient);
+    const device = new DaikinCloudDevice(structuredClone(deviceJson), ({requestResource: async () => true}) as unknown as OnectaClient);
 
     jest.spyOn(DaikinCloudController.prototype, 'getCloudDevices').mockImplementation(async () => {
         return [device];
@@ -286,7 +275,7 @@ test.each<Array<string | string | any>>([
 });
 
 test('DaikinCloudAirConditioningAccessory Getters', async () => {
-    const device = new DaikinCloudDevice(dx4Airco, undefined as unknown as OnectaClient);
+    const device = new DaikinCloudDevice(structuredClone(dx4Airco), ({requestResource: async () => true}) as unknown as OnectaClient);
 
     jest.spyOn(DaikinCloudController.prototype, 'getCloudDevices').mockImplementation(async () => {
         return [device];
@@ -316,7 +305,7 @@ test('DaikinCloudAirConditioningAccessory Getters', async () => {
 });
 
 test('DaikinCloudAirConditioningAccessory Setters', async () => {
-    const device = new DaikinCloudDevice(dx4Airco, undefined as unknown as OnectaClient);
+    const device = new DaikinCloudDevice(structuredClone(dx4Airco), ({requestResource: async () => true}) as unknown as OnectaClient);
 
     jest.spyOn(DaikinCloudController.prototype, 'getCloudDevices').mockImplementation(async () => {
         return [device];
@@ -335,10 +324,10 @@ test('DaikinCloudAirConditioningAccessory Setters', async () => {
     const homebridgeAccessory = new daikinAirConditioningAccessory(new DaikinCloudPlatform(new Logger(), config, api), accessory as unknown as PlatformAccessory<DaikinCloudAccessoryContext>);
 
     await homebridgeAccessory.service.handleActiveStateSet(1);
-    expect(setDataSpy).toHaveBeenNthCalledWith(1, 'climateControl', 'onOffMode', 'on', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(1, 'climateControl', 'onOffMode', undefined, 'on');
 
     await homebridgeAccessory.service.handleActiveStateSet(0);
-    expect(setDataSpy).toHaveBeenNthCalledWith(2, 'climateControl', 'onOffMode', 'off', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(2, 'climateControl', 'onOffMode', undefined, 'off');
 
     await homebridgeAccessory.service.handleCoolingThresholdTemperatureSet(21);
     expect(setDataSpy).toHaveBeenNthCalledWith(3, 'climateControl', 'temperatureControl', '/operationModes/cooling/setpoints/roomTemperature', 21);
@@ -351,24 +340,24 @@ test('DaikinCloudAirConditioningAccessory Setters', async () => {
     expect(setDataSpy).toHaveBeenNthCalledWith(6, 'climateControl', 'temperatureControl', '/operationModes/heating/setpoints/roomTemperature', 25);
 
     await homebridgeAccessory.service.handleTargetHeaterCoolerStateSet(1);
-    expect(setDataSpy).toHaveBeenNthCalledWith(7, 'climateControl', 'operationMode', 'heating', undefined);
-    expect(setDataSpy).toHaveBeenNthCalledWith(8, 'climateControl', 'onOffMode', 'on', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(7, 'climateControl', 'operationMode', undefined, 'heating');
+    expect(setDataSpy).toHaveBeenNthCalledWith(8, 'climateControl', 'onOffMode', undefined, 'on');
 
     await homebridgeAccessory.service.handleSwingModeSet(1);
     expect(setDataSpy).toHaveBeenNthCalledWith(9, 'climateControl', 'fanControl', '/operationModes/heating/fanDirection/horizontal/currentMode', 'swing');
     expect(setDataSpy).toHaveBeenNthCalledWith(10, 'climateControl', 'fanControl', '/operationModes/heating/fanDirection/vertical/currentMode', 'swing');
 
     await homebridgeAccessory.service.handlePowerfulModeSet(1);
-    expect(setDataSpy).toHaveBeenNthCalledWith(11, 'climateControl', 'powerfulMode', 'on', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(11, 'climateControl', 'powerfulMode', undefined, 'on');
 
     await homebridgeAccessory.service.handleEconoModeSet(1);
-    expect(setDataSpy).toHaveBeenNthCalledWith(12, 'climateControl', 'econoMode', 'on', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(12, 'climateControl', 'econoMode', undefined, 'on');
 
     await homebridgeAccessory.service.handleStreamerModeSet(1);
-    expect(setDataSpy).toHaveBeenNthCalledWith(13, 'climateControl', 'streamerMode', 'on', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(13, 'climateControl', 'streamerMode', undefined, 'on');
 
     await homebridgeAccessory.service.handleOutdoorSilentModeSet(1);
-    expect(setDataSpy).toHaveBeenNthCalledWith(14, 'climateControl', 'outdoorSilentMode', 'on', undefined);
+    expect(setDataSpy).toHaveBeenNthCalledWith(14, 'climateControl', 'outdoorSilentMode', undefined, 'on');
 
     await homebridgeAccessory.service.handleIndoorSilentModeSet(1);
     expect(setDataSpy).toHaveBeenNthCalledWith(15, 'climateControl', 'fanControl', '/operationModes/heating/fanSpeed/currentMode', 'quiet');

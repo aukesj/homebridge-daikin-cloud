@@ -30,7 +30,7 @@ test('Initialize platform', async () => {
         'oidcClientSecret': 'CLIENT_SECRET',
         'oidcTokenSetFilePath': `${api.user.storagePath()}/.daikin-controller-cloud-tokenset`,
     });
-    expect(platform.updateIntervalDelay).toBe(900000);
+    expect(platform.updateIntervalDelay).toBe(600000);
 });
 
 test('DaikinCloudPlatform with new Aircondition accessory', (done) => {
@@ -62,7 +62,7 @@ test('DaikinCloudPlatform with new Aircondition accessory', (done) => {
     setTimeout(() => {
         expect(daikinAirConditioningAccessory).toHaveBeenCalled();
         expect(daikinAlthermaAccessory).not.toHaveBeenCalled();
-        expect(registerPlatformAccessoriesSpy).toBeCalledWith('homebridge-daikin-cloud', 'DaikinCloud', expect.anything());
+        expect(registerPlatformAccessoriesSpy).toBeCalledWith('homebridge-daikin-onecta', 'DaikinOnecta', expect.anything());
         done();
     }, 10);
 });
@@ -96,7 +96,7 @@ test('DaikinCloudPlatform with new Altherma accessory', (done) => {
     setTimeout(() => {
         expect(daikinAlthermaAccessory).toHaveBeenCalled();
         expect(daikinAirConditioningAccessory).not.toHaveBeenCalled();
-        expect(registerPlatformAccessoriesSpy).toHaveBeenCalledWith('homebridge-daikin-cloud', 'DaikinCloud', expect.anything());
+        expect(registerPlatformAccessoriesSpy).toHaveBeenCalledWith('homebridge-daikin-onecta', 'DaikinOnecta', expect.anything());
         done();
     }, 10);
 });

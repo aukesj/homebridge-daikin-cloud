@@ -13,7 +13,7 @@ MockLogger.log = MockLogger;
 
 export class MockPlatformConfig implements PlatformConfig {
     name = 'Home';
-    platform = 'DaikinCloud';
+    platform = 'DaikinOnecta';
     clientId = 'CLIENT_ID';
     clientSecret = 'CLIENT_SECRET';
     oidcCallbackServerBindAddr = 'SERVER_BIND_ADDRESS';

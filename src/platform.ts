@@ -46,7 +46,7 @@ export class DaikinCloudPlatform implements DynamicPlatformPlugin {
         this.Service = this.api.hap.Service;
         this.Characteristic = this.api.hap.Characteristic;
         this.storagePath = api.user.storagePath();
-        this.updateIntervalDelay = ONE_MINUTE * (this.config.updateIntervalInMinutes || 15);
+        this.updateIntervalDelay = ONE_MINUTE * (this.config.updateIntervalInMinutes || 10);
         const daikinCloudControllerConfig: OnectaClientConfig = {
             oidcClientId: this.config.clientId,
             oidcClientSecret: this.config.clientSecret,
