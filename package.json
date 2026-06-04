@@ -23,6 +23,7 @@
     "lint": "eslint src/**.ts --max-warnings=0",
     "watch": "npm run build && npm link && nodemon",
     "build": "rimraf ./dist && tsc",
+    "prepare": "npm run build",
     "release": "npm publish",
     "release:beta": "npm publish --tag beta"
   },
