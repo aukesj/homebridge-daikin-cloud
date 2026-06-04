@@ -15,10 +15,23 @@ export class daikinAccessory {
 
         this.printDeviceInfo();
 
-        this.accessory.getService(this.platform.Service.AccessoryInformation)!
+        const serialNumberData = accessory.context.device.getData(this.gatewayManagementPointId, 'serialNumber', undefined);
+        // Some adapters (e.g. BRP069A8x/B4x air-to-air units) don't report a serialNumber. Falling back to a
+        // constant string would give every such accessory an identical SerialNumber, which makes the Apple Home
+        // app treat them as the same physical accessory and mirror commands across them (e.g. turning on one AC
+        // turns on all of them). The device id is unique per gateway-device, so use it as a stable unique fallback.
+        const serialNumber: string = serialNumberData ? serialNumberData.value : accessory.context.device.getId();
+
+        const firmwareData = accessory.context.device.getData(this.gatewayManagementPointId, 'firmwareVersion', undefined);
+
+        const accessoryInformation = this.accessory.getService(this.platform.Service.AccessoryInformation)!
             .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Daikin')
             .setCharacteristic(this.platform.Characteristic.Model, accessory.context.device.getData(this.gatewayManagementPointId, 'modelInfo', undefined).value)
-            .setCharacteristic(this.platform.Characteristic.SerialNumber, accessory.context.device.getData(this.gatewayManagementPointId, 'serialNumber', undefined) ? accessory.context.device.getData(this.gatewayManagementPointId, 'serialNumber', undefined).value : 'NOT_AVAILABLE');
+            .setCharacteristic(this.platform.Characteristic.SerialNumber, serialNumber);
+
+        if (firmwareData) {
+            accessoryInformation.setCharacteristic(this.platform.Characteristic.FirmwareRevision, firmwareData.value);
+        }
 
         this.accessory.context.device.on('updated', () => {
             this.platform.log.debug(`[API Syncing] Updated ${this.accessory.displayName} (${this.accessory.UUID}), LastUpdated: ${this.accessory.context.device.getLastUpdated()}`);
