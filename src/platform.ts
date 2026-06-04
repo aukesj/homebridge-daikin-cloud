@@ -138,9 +138,17 @@ export class DaikinCloudPlatform implements DynamicPlatformPlugin {
                     return;
                 }
 
+                // Setting the category tells the Home app and Siri what kind of device this is. Without it an air
+                // conditioner can be mistaken for a generic thermostat, so "set the air conditioner to 19 degrees" can
+                // end up targeting another thermostat in the home.
+                const category = deviceModel === 'Altherma'
+                    ? this.api.hap.Categories.THERMOSTAT
+                    : this.api.hap.Categories.AIR_CONDITIONER;
+
                 if (existingAccessory) {
                     this.log.info('[Platform] Restoring existing accessory from cache:', existingAccessory.displayName);
                     existingAccessory.context.device = device;
+                    existingAccessory.category = category;
                     this.api.updatePlatformAccessories([existingAccessory]);
 
                     if (deviceModel === 'Altherma') {
@@ -155,6 +163,7 @@ export class DaikinCloudPlatform implements DynamicPlatformPlugin {
                     this.log.info('[Platform] Adding new accessory, deviceModel:', StringUtils.isEmpty(name) ? deviceModel : name);
                     const accessory = new this.api.platformAccessory<DaikinCloudAccessoryContext>(StringUtils.isEmpty(name) ? deviceModel : name, uuid);
                     accessory.context.device = device;
+                    accessory.category = category;
 
                     if (deviceModel === 'Altherma') {
                         new daikinAlthermaAccessory(this, accessory);
