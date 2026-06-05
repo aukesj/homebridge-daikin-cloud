@@ -155,6 +155,13 @@ export class DaikinCloudPlatform implements DynamicPlatformPlugin {
                     this.log.info('[Platform] Adding new accessory, deviceModel:', StringUtils.isEmpty(name) ? deviceModel : name);
                     const accessory = new this.api.platformAccessory<DaikinCloudAccessoryContext>(StringUtils.isEmpty(name) ? deviceModel : name, uuid);
                     accessory.context.device = device;
+                    // The category tells the Home app and Siri what kind of device this is. Without it an air
+                    // conditioner stays a generic "other" device, which Siri does not recognise as a climate device,
+                    // so "set the air conditioner to 19 degrees" can get routed to another thermostat in the home.
+                    // The category can only be set on a freshly created accessory, never changed on a cached one.
+                    accessory.category = deviceModel === 'Altherma'
+                        ? this.api.hap.Categories.THERMOSTAT
+                        : this.api.hap.Categories.AIR_CONDITIONER;
 
                     if (deviceModel === 'Altherma') {
                         new daikinAlthermaAccessory(this, accessory);
