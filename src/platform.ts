@@ -138,9 +138,18 @@ export class DaikinCloudPlatform implements DynamicPlatformPlugin {
                     return;
                 }
 
+                // The category tells the Home app and Siri what kind of device this is. Without it an air conditioner
+                // stays a generic "other" device, which Siri does not recognise as a climate device, so "set the air
+                // conditioner to 19 degrees" can get routed to another thermostat in the home. We pass it to the
+                // accessory constructor (the canonical way) for new accessories and re-assert it on restored ones.
+                const category = deviceModel === 'Altherma'
+                    ? this.api.hap.Categories.THERMOSTAT
+                    : this.api.hap.Categories.AIR_CONDITIONER;
+
                 if (existingAccessory) {
                     this.log.info('[Platform] Restoring existing accessory from cache:', existingAccessory.displayName);
                     existingAccessory.context.device = device;
+                    existingAccessory.category = category;
                     this.api.updatePlatformAccessories([existingAccessory]);
 
                     if (deviceModel === 'Altherma') {
@@ -153,7 +162,7 @@ export class DaikinCloudPlatform implements DynamicPlatformPlugin {
                     const climateControlEmbeddedId = device.desc.managementPoints.find(mp => mp.managementPointType === 'climateControl')?.embeddedId;
                     const name: string = device.getData(climateControlEmbeddedId, 'name', undefined).value;
                     this.log.info('[Platform] Adding new accessory, deviceModel:', StringUtils.isEmpty(name) ? deviceModel : name);
-                    const accessory = new this.api.platformAccessory<DaikinCloudAccessoryContext>(StringUtils.isEmpty(name) ? deviceModel : name, uuid);
+                    const accessory = new this.api.platformAccessory<DaikinCloudAccessoryContext>(StringUtils.isEmpty(name) ? deviceModel : name, uuid, category);
                     accessory.context.device = device;
 
                     if (deviceModel === 'Altherma') {
