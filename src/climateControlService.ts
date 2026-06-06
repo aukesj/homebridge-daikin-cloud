@@ -674,6 +674,11 @@ export class ClimateControlService {
         this.platform.log.debug(`[${this.name}] SET indoorSilentMode to: ${value}`);
         const daikinFanSpeedMode = value as boolean ? DaikinFanSpeedModes.QUIET : DaikinFanSpeedModes.FIXED;
         await this.setData('fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/currentMode`, daikinFanSpeedMode);
+        // Indoor silent and Auto fan are the same datapoint (one of quiet/auto/fixed), so enabling one disables the
+        // other. Reflect that immediately in HomeKit instead of waiting for the next poll to correct it.
+        if (value as boolean) {
+            this.switchServiceFanAutoMode?.updateCharacteristic(this.platform.Characteristic.On, false);
+        }
     }
 
     async handleFanAutoModeGet() {
@@ -688,6 +693,11 @@ export class ClimateControlService {
         // Auto off falls back to manual/fixed.
         const daikinFanSpeedMode = value as boolean ? DaikinFanSpeedModes.AUTO : DaikinFanSpeedModes.FIXED;
         await this.setData('fanControl', `/operationModes/${this.getCurrentOperationMode()}/fanSpeed/currentMode`, daikinFanSpeedMode);
+        // Auto fan and Indoor silent are the same datapoint (one of auto/quiet/fixed), so enabling one disables the
+        // other. Reflect that immediately in HomeKit instead of waiting for the next poll to correct it.
+        if (value as boolean) {
+            this.switchServiceIndoorSilentMode?.updateCharacteristic(this.platform.Characteristic.On, false);
+        }
     }
 
     async handleDryOperationModeGet() {
