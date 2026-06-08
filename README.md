@@ -20,6 +20,30 @@ The plugin supports some basic Daikin airco settings:
 
 ![IMG_7664](https://user-images.githubusercontent.com/657797/166705724-03255e67-252e-480e-9b4f-5cbc33aa9527.jpeg) ![IMG_7665](https://user-images.githubusercontent.com/657797/166705729-748e878a-dfd6-431a-923d-6287ce012bd8.jpeg)
 
+## Changes in this fork (3.0.0)
+
+This is a hardened fork of `homebridge-daikin-cloud`, focused on reliability with multiple units and on
+Apple Home / Siri behaving correctly. It keeps the original plugin name so it installs as an in-place upgrade.
+
+**Fixes**
+- **One air conditioner turning on all of them.** The debug-log mask used to overwrite every unit's serial
+  number with `'REDACTED'` in place, giving all accessories an identical SerialNumber. Apple Home then treated
+  them as one physical device and mirrored commands. The mask now deep-clones first, so the real, unique serials
+  are preserved.
+- **Siri routing "the air conditioner" to another thermostat.** Accessories now get the `AIR_CONDITIONER`
+  category (Altherma: `THERMOSTAT`), so Siri recognises them as climate devices.
+- Failed cloud writes now surface to HomeKit (it shows "No Response") instead of being silently swallowed.
+
+**Improvements**
+- **Write-wins**: a value you set is re-asserted to the laggy cloud until confirmed, so a poll no longer reverts
+  your change (e.g. a setpoint jumping back).
+- **External changes show up automatically**: the current state is pushed to HomeKit after every poll, so changes
+  made in the Onecta app appear without opening the Home app.
+- A **fault sensor** (contact sensor, so you can enable notifications) and an optional **outdoor temperature
+  sensor** (`showOutdoorTemperatureSensor`, off by default).
+- An **Auto fan speed** switch, mutually exclusive with the Indoor silent switch.
+- Default poll interval lowered from 15 to 10 minutes.
+
 ## Important: NEW Daikin API
 
 Have a close look at the config section below, you need to create an App in the Daikin Europe Developer Portal and set up some required parameters.
